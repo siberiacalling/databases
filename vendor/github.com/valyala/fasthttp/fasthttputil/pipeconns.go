@@ -8,9 +8,7 @@ import (
 	"time"
 )
 
-// NewPipeConns returns new bi-directional connection pipe.
-//
-// PipeConns is NOT safe for concurrent use by multiple goroutines!
+// NewPipeConns returns new bi-directonal connection pipe.
 func NewPipeConns() *PipeConns {
 	ch1 := make(chan *byteBuffer, 4)
 	ch2 := make(chan *byteBuffer, 4)
@@ -40,7 +38,6 @@ func NewPipeConns() *PipeConns {
 //     calling Read in order to unblock each Write call.
 //   * It supports read and write deadlines.
 //
-// PipeConns is NOT safe for concurrent use by multiple goroutines!
 type PipeConns struct {
 	c1         pipeConn
 	c2         pipeConn
@@ -90,8 +87,6 @@ type pipeConn struct {
 
 	readDeadlineCh  <-chan time.Time
 	writeDeadlineCh <-chan time.Time
-
-	readDeadlineChLock sync.Mutex
 }
 
 func (c *pipeConn) Write(p []byte) (int, error) {
@@ -163,15 +158,10 @@ func (c *pipeConn) readNextByteBuffer(mayBlock bool) error {
 		if !mayBlock {
 			return errWouldBlock
 		}
-		c.readDeadlineChLock.Lock()
-		readDeadlineCh := c.readDeadlineCh
-		c.readDeadlineChLock.Unlock()
 		select {
 		case c.b = <-c.rCh:
-		case <-readDeadlineCh:
-			c.readDeadlineChLock.Lock()
+		case <-c.readDeadlineCh:
 			c.readDeadlineCh = closedDeadlineCh
-			c.readDeadlineChLock.Unlock()
 			// rCh may contain data when deadline is reached.
 			// Read the data before returning ErrTimeout.
 			select {
@@ -215,8 +205,8 @@ func (c *pipeConn) RemoteAddr() net.Addr {
 }
 
 func (c *pipeConn) SetDeadline(deadline time.Time) error {
-	c.SetReadDeadline(deadline)  //nolint:errcheck
-	c.SetWriteDeadline(deadline) //nolint:errcheck
+	c.SetReadDeadline(deadline)
+	c.SetWriteDeadline(deadline)
 	return nil
 }
 
@@ -224,10 +214,7 @@ func (c *pipeConn) SetReadDeadline(deadline time.Time) error {
 	if c.readDeadlineTimer == nil {
 		c.readDeadlineTimer = time.NewTimer(time.Hour)
 	}
-	readDeadlineCh := updateTimer(c.readDeadlineTimer, deadline)
-	c.readDeadlineChLock.Lock()
-	c.readDeadlineCh = readDeadlineCh
-	c.readDeadlineChLock.Unlock()
+	c.readDeadlineCh = updateTimer(c.readDeadlineTimer, deadline)
 	return nil
 }
 
