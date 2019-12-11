@@ -6,7 +6,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func handleCreateOptions(ctx *fasthttp.RequestCtx) {
+func handleCreate(ctx *fasthttp.RequestCtx) {
 	options := ctx.UserValue("options").(string)
 	if options == "/create" {
 		handler.CreateForum(ctx)
@@ -20,7 +20,7 @@ func handleCreateOptions(ctx *fasthttp.RequestCtx) {
 func CreateRouter() *fasthttprouter.Router {
 	r := fasthttprouter.New()
 
-	r.POST("/api/forum/*options", handleCreateOptions)
+	r.POST("/api/forum/*options", handleCreate)
 
 	r.GET("/api/forum/:slug/details", handler.GetForumInfo)
 	r.GET("/api/forum/:slug/threads", handler.GetForumThreads)

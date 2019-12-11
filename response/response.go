@@ -1,4 +1,4 @@
-package handler
+package response
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func WriteResponse(ctx *fasthttp.RequestCtx, statusCode int, body interface{}) {
+func Write(ctx *fasthttp.RequestCtx, statusCode int, body interface{}) {
 	ctx.SetContentType("application/json")
 
 	resp, err := json.Marshal(body)

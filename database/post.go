@@ -26,18 +26,6 @@ var bigInsert = `INSERT INTO post (parent, message, thread, author, forum) value
 var postByThread = `SELECT id, parent, author, message, forum, thread, created FROM post WHERE thread = $1`
 var parentQuery = `SELECT id, parent, author, message, forum, thread, created FROM post WHERE root IN (SELECT id FROM post WHERE thread = $1 AND parent = 0 `
 
-func CreatePost(post *models.Post) (*models.Post, error) {
-	newPost := *post
-	if err := db.CreatePostStmt.QueryRow(post.Parent, post.Author, post.Message, post.Forum, post.Thread).Scan(&newPost.ID, &newPost.Created); err != nil {
-		return nil, errors.Wrap(err, "can't insert into post")
-	}
-	return &newPost, nil
-}
-
-func CreatePosts(posts *[]models.Post, threadSlug string) (*[]models.Post, error) {
-
-}
-
 func GetPostByID(id int64) (*models.Post, error) {
 	var post models.Post
 	if err := db.GetPostByIDStmt.QueryRow(id).Scan(&post.ID, &post.Parent, &post.Author, &post.Message, &post.IsEdited, &post.Forum, &post.Thread, &post.Created); err != nil {
@@ -49,16 +37,241 @@ func GetPostByID(id int64) (*models.Post, error) {
 	return &post, nil
 }
 
-func GetPostsFlat(thread int32, limit string, since string, desc string) (*[]models.Post, error) {
-
-}
-
 func GetPostsTree(thread int32, limit string, since string, desc string) (*[]models.Post, error) {
-
+	posts := make([]models.Post, 0)
+	getPostTree := postByThread
+	var rows *sql.Rows
+	var err error
+	if since != "" {
+		if desc == "true" {
+			getPostTree += ` AND path < (SELECT path FROM post WHERE id = $2 ) ORDER BY path DESC LIMIT $3;`
+		} else {
+			getPostTree += ` AND path > (SELECT path FROM post WHERE id = $2 ) ORDER BY path LIMIT $3;`
+		}
+		rows, err = db.pg.Query(getPostTree, thread, since, limit)
+	} else {
+		since = "0"
+		if desc == "true" {
+			getPostTree += ` ORDER BY path DESC LIMIT $2;`
+		} else {
+			getPostTree += ` ORDER BY path LIMIT $2;`
+		}
+		rows, err = db.pg.Query(getPostTree, thread, limit)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &posts, nil
+		}
+		return nil, errors.Wrap(err, "can't select from posts")
+	}
+	for rows.Next() {
+		var post models.Post
+		if err := rows.Scan(&post.ID, &post.Parent, &post.Author, &post.Message, &post.Forum, &post.Thread, &post.Created); err != nil {
+			return nil, errors.Wrap(err, "can't scan rows")
+		}
+		posts = append(posts, post)
+	}
+	return &posts, nil
 }
 
-func GetPostsParentTree(thread int32, limit string, since string, desc string) (*[]models.Post, error) {
+func CreatePost(post *models.Post) (*models.Post, error) {
+	newPost := *post
+	if err := db.CreatePostStmt.QueryRow(post.Parent, post.Author, post.Message, post.Forum, post.Thread).Scan(&newPost.ID, &newPost.Created); err != nil {
+		return nil, errors.Wrap(err, "can't insert into post")
+	}
+	return &newPost, nil
+}
 
+func CreatePosts(posts *[]models.Post, threadSlug string) (*[]models.Post, error) {
+	tx, err := db.pg.Begin()
+	if err != nil {
+		return nil, errors.Wrap(err, "can't start transaction")
+	}
+	resPosts := make([]models.Post, 0)
+	var thread *models.Thread
+	if govalidator.IsNumeric(threadSlug) {
+		thread, err = GetThreadByID(threadSlug)
+	} else {
+		thread, err = GetThreadBySlug(threadSlug)
+	}
+	if err != nil {
+		tx.Rollback()
+		return nil, err
+	}
+
+	queryEnd := " returning id, is_edited, created"
+	var queryValues []string
+
+	args := make([]interface{}, 0, len(*posts)*5)
+	parents := make([]string, 0, len(*posts))
+
+	if len(*posts) == 0 {
+		return &resPosts, nil
+	}
+
+	if len(*posts) < 100 {
+		for i, post := range *posts {
+			author, err := GetUserByUsername(post.Author)
+			if err != nil || author == nil {
+				return nil, ErrNotFound
+			}
+			(*posts)[i].Author = author.Nickname
+		}
+	}
+
+	if len(*posts) == 100 {
+		for _, post := range *posts {
+			if post.Parent != 0 {
+				parents = append(parents, strconv.Itoa(int(post.Parent)))
+			}
+			args = append(args, post.Parent, post.Message, thread.ID, post.Author, thread.Forum)
+		}
+	} else {
+		for _, post := range *posts {
+			if post.Parent != 0 {
+				parents = append(parents, strconv.Itoa(int(post.Parent)))
+			}
+			queryValues = append(queryValues, fmt.Sprintf("($%d, $%d, $%d, $%d, $%d)", len(args)+1, len(args)+2, len(args)+3, len(args)+4, len(args)+5))
+			args = append(args, post.Parent, post.Message, thread.ID, post.Author, thread.Forum)
+		}
+	}
+
+	if len(parents) != 0 {
+		rows, err := tx.Query(fmt.Sprint(`select thread from post where id in (`, strings.Join(parents, ","), ")"))
+		hasP := false
+
+		for rows.Next() {
+			hasP = true
+
+			var tId int32
+			err = rows.Scan(&tId)
+			if err != nil {
+				log.Println(err)
+			}
+
+			if tId != thread.ID {
+				return nil, ErrDuplicate
+			}
+		}
+
+		if !hasP {
+			return nil, ErrDuplicate
+		}
+
+	}
+
+	query := postInsert
+	query += strings.Join(queryValues, ",") + queryEnd
+	var rows *sql.Rows
+	if len(*posts) == 100 {
+		rows, err = tx.Stmt(db.BigInsert).Query(args...)
+	} else {
+		rows, err = tx.Query(query, args...)
+	}
+
+	var par []string
+	var nopar []string
+
+	a := make(map[string]bool)
+	for i, post := range *posts {
+		if rows.Next() {
+			err = rows.Scan(&((*posts)[i].ID), &((*posts)[i].IsEdited), &((*posts)[i].Created))
+			if post.Parent != 0 {
+				par = append(par, strconv.Itoa(int(post.ID)))
+			} else {
+				nopar = append(nopar, strconv.Itoa(int(post.ID)))
+			}
+
+			a["'"+post.Author+"'"] = true
+			(*posts)[i].Forum = thread.Forum
+			(*posts)[i].Thread = thread.ID
+		}
+	}
+	rows.Close()
+
+	auth := make([]string, 0, len(a))
+	for key := range a {
+		auth = append(auth, key)
+	}
+
+	if err := rows.Err(); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+
+		log.Println("error on main query")
+		log.Println(err)
+		return nil, ErrDuplicate
+	}
+	tx.Exec(updateForumPostsCount, thread.Forum, len(*posts))
+
+	err = tx.Commit()
+	if err != nil {
+		log.Println(err)
+	}
+
+	for _, post := range *posts {
+		var root int64
+		sqlPath := make([]sql.NullInt64, 0)
+		if post.Parent != 0 {
+			if err = db.pg.QueryRow(getPath, post.Parent, thread.ID).Scan(pq.Array(&sqlPath)); err != nil {
+				tx.Rollback()
+				if err == sql.ErrNoRows {
+					return nil, ErrDuplicate
+				}
+				return nil, errors.Wrap(err, "can't get path from parent post")
+			}
+			root = sqlPath[0].Int64
+		} else {
+			root = post.ID
+		}
+		sqlPath = append(sqlPath, sql.NullInt64{post.ID, true})
+		updateStmt, err := db.pg.Prepare(updatePostPath)
+		if err != nil {
+			return nil, errors.Wrap(err, "can't prepare post path")
+		}
+		if _, err = updateStmt.Exec(post.ID, root, pq.Array(sqlPath)); err != nil {
+			return nil, errors.Wrap(err, "can't update post path")
+		}
+	}
+
+	return posts, nil
+}
+
+func GetPostsFlat(thread int32, limit string, since string, desc string) (*[]models.Post, error) {
+	posts := make([]models.Post, 0)
+	getPostsFlat := postByThread
+	var rows *sql.Rows
+	var err error
+	if since != "" {
+		if desc == "true" {
+			getPostsFlat += " AND id < $2 ORDER BY id DESC LIMIT $3;"
+		} else {
+			getPostsFlat += " AND id > $2 ORDER BY id ASC LIMIT $3;"
+		}
+		rows, err = db.pg.Query(getPostsFlat, thread, since, limit)
+	} else {
+		if desc == "true" {
+			getPostsFlat += " ORDER BY id DESC LIMIT $2;"
+		} else {
+			getPostsFlat += " ORDER BY id LIMIT $2;"
+		}
+		rows, err = db.pg.Query(getPostsFlat, thread, limit)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &posts, nil
+		}
+		return nil, errors.Wrap(err, "can't select from posts")
+	}
+	for rows.Next() {
+		var post models.Post
+		if err := rows.Scan(&post.ID, &post.Parent, &post.Author, &post.Message, &post.Forum, &post.Thread, &post.Created); err != nil {
+			return nil, errors.Wrap(err, "can't scan rows")
+		}
+		posts = append(posts, post)
+	}
+	return &posts, nil
 }
 
 func UpdatePost(post *models.Post) (*models.Post, error) {
@@ -87,3 +300,42 @@ func UpdatePost(post *models.Post) (*models.Post, error) {
 	}
 	return &newPost, nil
 }
+
+func GetPostsParentTree(thread int32, limit string, since string, desc string) (*[]models.Post, error) {
+	posts := make([]models.Post, 0)
+	getPostParentTree := parentQuery
+	var rows *sql.Rows
+	var err error
+	if since != "" {
+		if desc == "true" {
+			getPostParentTree += ` AND root < (SELECT root FROM post WHERE id = $2 ) ORDER BY root DESC LIMIT $3)  ORDER BY root desc, path ;`
+		} else {
+			getPostParentTree += ` AND path > (SELECT path FROM post WHERE id = $2 ) ORDER BY id LIMIT $3) ORDER BY path;`
+		}
+		rows, err = db.pg.Query(getPostParentTree, thread, since, limit)
+	} else {
+		since = "0"
+		if desc == "true" {
+			getPostParentTree += `ORDER BY root DESC LIMIT $2) ORDER BY root DESC, path;`
+		} else {
+			getPostParentTree += `ORDER BY id LIMIT $2) ORDER BY path;`
+		}
+		rows, err = db.pg.Query(getPostParentTree, thread, limit)
+	}
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return &posts, nil
+		}
+		return nil, errors.Wrap(err, "can't select from posts")
+	}
+	for rows.Next() {
+		var post models.Post
+		if err := rows.Scan(&post.ID, &post.Parent, &post.Author, &post.Message, &post.Forum, &post.Thread, &post.Created); err != nil {
+			return nil, errors.Wrap(err, "can't scan rows")
+		}
+		posts = append(posts, post)
+	}
+	return &posts, nil
+}
+
+

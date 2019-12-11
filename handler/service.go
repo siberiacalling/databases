@@ -4,15 +4,15 @@ import (
 	"net/http"
 
 	"db-forum/database"
-
+	"db-forum/response"
 	"github.com/valyala/fasthttp"
 )
 
-func ClearService(ctx *fasthttp.RequestCtx) {
-	database.ClearTable()
-	WriteResponse(ctx, http.StatusOK, nil)
+func ClearService(context *fasthttp.RequestCtx) {
+	database.Clear()
+	response.Write(context, http.StatusOK, nil)
 }
 
-func GetServiceStatus(ctx *fasthttp.RequestCtx) {
-	WriteResponse(ctx, http.StatusOK, database.GetStatus())
+func GetServiceStatus(context *fasthttp.RequestCtx) {
+	response.Write(context, http.StatusOK, database.GetStatus())
 }

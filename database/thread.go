@@ -21,7 +21,34 @@ var updateThread = `UPDATE thread SET title = coalesce(coalesce(nullif($2, ''), 
 var updateVoteThread = `UPDATE thread SET votes = votes + $1 WHERE id = $2 RETURNING votes;`
 
 func CreateThread(thread *models.Thread) (*models.Thread, error) {
-
+	var slug string
+	var id int32
+	tx, err := db.pg.Begin()
+	if err != nil {
+		return nil, errors.Wrap(err, "can't start transaction")
+	}
+	if err := db.CreateThreadStmt.QueryRow(thread.Title, thread.Author, thread.Forum, thread.Message, thread.Created, thread.Slug).Scan(&slug, &id); err != nil {
+		existThread, error := GetThreadBySlug(thread.Slug)
+		if error == ErrNotFound {
+			tx.Rollback()
+			return nil, errors.Wrap(err, "can't insert into db")
+		}
+		tx.Rollback()
+		return existThread, ErrDuplicate
+	}
+	updateForumCountStmt, err := db.pg.Prepare(updateForumCount)
+	if err != nil {
+		tx.Rollback()
+		return nil, errors.Wrap(err, "can't prepare query")
+	}
+	if _, err := updateForumCountStmt.Exec(thread.Forum); err != nil {
+		tx.Rollback()
+		return nil, errors.Wrap(err, "can't exec query")
+	}
+	tx.Commit()
+	thread.Slug = slug
+	thread.ID = id
+	return thread, nil
 }
 
 func GetThreadByID(id string) (*models.Thread, error) {

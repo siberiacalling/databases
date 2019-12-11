@@ -53,6 +53,10 @@ func GetStatus() *models.Status {
 	return &status
 }
 
+func Clear() {
+	db.pg.Exec(clearDB)
+}
+
 func InitDB(DSN string) error {
 	var err error
 	var newDB DB
@@ -104,8 +108,4 @@ func prepareQueries() error {
 		}
 	}
 	return err
-}
-
-func ClearTable() {
-	db.pg.Exec(clearDB)
 }

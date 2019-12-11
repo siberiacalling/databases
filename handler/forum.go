@@ -3,6 +3,7 @@ package handler
 import (
 	"db-forum/database"
 	"db-forum/models"
+	"db-forum/response"
 	"log"
 	"net/http"
 	"strconv"
@@ -11,78 +12,84 @@ import (
 	"golang.org/x/tools/container/intsets"
 )
 
-func CreateForum(ctx *fasthttp.RequestCtx) {
-	var forum models.Forum
-	body := ctx.PostBody()
+func CreateForum(context *fasthttp.RequestCtx) {
+	body := context.PostBody()
 
+	var forum models.Forum
 	if err := forum.UnmarshalJSON(body); err != nil {
-		WriteResponse(ctx, http.StatusBadRequest, models.Error{err.Error()})
+		response.Write(context, http.StatusBadRequest, models.Error{err.Error()})
 		return
 	}
-	forumAuthor, err := database.GetUserByUsername(forum.User)
+
+	author, err := database.GetUserByUsername(forum.User)
 	if err != nil {
 		if err == database.ErrNotFound {
-			WriteResponse(ctx, http.StatusNotFound, models.Error{"Can't find user"})
+			response.Write(context, http.StatusNotFound, models.Error{"Can't find user"})
 			return
 		}
 		log.Println(err.Error())
-		WriteResponse(ctx, http.StatusInternalServerError, models.Error{err.Error()})
+		response.Write(context, http.StatusInternalServerError, models.Error{err.Error()})
 		return
 	}
-	forum.User = forumAuthor.Nickname
+
+	forum.User = author.Nickname
 	newForum, err := database.CreateForum(&forum)
 	if err != nil {
 		if err == database.ErrDuplicate {
-			WriteResponse(ctx, http.StatusConflict, newForum)
+			response.Write(context, http.StatusConflict, newForum)
 			return
 		}
 		log.Println(err.Error())
-		WriteResponse(ctx, http.StatusInternalServerError, err.Error())
+		response.Write(context, http.StatusInternalServerError, err.Error())
 		return
 	}
-	WriteResponse(ctx, http.StatusCreated, newForum)
+	response.Write(context, http.StatusCreated, newForum)
 }
 
-func GetForumInfo(ctx *fasthttp.RequestCtx) {
-	forumID := ctx.UserValue("slug").(string)
-	forum, err := database.GetForum(forumID)
+func GetForumInfo(context *fasthttp.RequestCtx) {
+	id := context.UserValue("slug").(string)
+
+	forumByID, err := database.GetForum(id)
 	if err != nil {
 		if err == database.ErrNotFound {
-			WriteResponse(ctx, http.StatusNotFound, models.Error{"Can't find forum"})
+			response.Write(context, http.StatusNotFound, models.Error{"Can't find forumByID"})
 			return
 		}
 		log.Println(err.Error())
-		WriteResponse(ctx, http.StatusInternalServerError, models.Error{err.Error()})
+		response.Write(context, http.StatusInternalServerError, models.Error{err.Error()})
 		return
 	}
-	WriteResponse(ctx, http.StatusOK, forum)
+	response.Write(context, http.StatusOK, forumByID)
 }
 
-func GetForumUsers(ctx *fasthttp.RequestCtx) {
-	forumID := ctx.UserValue("slug").(string)
-	limit := string(ctx.QueryArgs().Peek("limit"))
-	since := string(ctx.QueryArgs().Peek("since"))
-	desc := string(ctx.QueryArgs().Peek("desc"))
+func GetForumUsers(context *fasthttp.RequestCtx) {
+	id := context.UserValue("slug").(string)
+
+	limit := string(context.QueryArgs().Peek("limit"))
+	since := string(context.QueryArgs().Peek("since"))
+	desc := string(context.QueryArgs().Peek("desc"))
+
 	if limit == "" {
 		limit = strconv.Itoa(intsets.MaxInt)
 	}
-	forum, err := database.GetForum(forumID)
+	forumById, err := database.GetForum(id)
 	if err != nil {
 		if err == database.ErrNotFound {
-			WriteResponse(ctx, http.StatusNotFound, models.Error{"can't find forum"})
+			response.Write(context, http.StatusNotFound, models.Error{"can't find forumById"})
 			return
 		}
 		log.Println(err.Error())
-		WriteResponse(ctx, http.StatusInternalServerError, models.Error{err.Error()})
+		response.Write(context, http.StatusInternalServerError, models.Error{err.Error()})
 		return
 	}
 
-	forumID = forum.Slug
-	users, err := database.GetForumUsers(forumID, limit, since, desc)
+	id = forumById.Slug
+	users, err := database.GetForumUsers(id, limit, since, desc)
 	if err != nil {
 		log.Println(err.Error())
-		WriteResponse(ctx, http.StatusInternalServerError, models.Error{err.Error()})
+		response.Write(context, http.StatusInternalServerError, models.Error{err.Error()})
 		return
 	}
-	WriteResponse(ctx, http.StatusOK, users)
+
+	response.Write(context, http.StatusOK, users)
 }

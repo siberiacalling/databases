@@ -14,6 +14,21 @@ var getForumThreads = `SELECT id, title, author, forum, message, votes, created,
 var getForumThreadsWithTime = `SELECT id, title, author, forum, message, votes, created, slug FROM thread WHERE forum = $1 AND created <= $2;`
 var getThreadInfo = `SELECT id, title, author, forum, message, votes, created, slug FROM thread WHERE forum = $1`
 
+func CreateForum(forum *models.Forum) (*models.Forum, error) {
+	_, err := db.CreateForumStmt.Exec(forum.Title, forum.User, forum.Slug)
+	if err != nil {
+		f, err := GetForum(forum.Slug)
+		if err != nil {
+			if err == ErrNotFound {
+				return nil, errors.New("can't insert into db")
+			}
+			return nil, errors.Wrap(err, "can't get from forum")
+		}
+		return f, ErrDuplicate
+	}
+	return forum, nil
+}
+
 func GetForumThreads(forum string, since string, order string, limit int) (*[]models.Thread, error) {
 	threads := make([]models.Thread, 0)
 	var rows *sql.Rows
@@ -59,19 +74,3 @@ func GetForum(slug string) (*models.Forum, error) {
 	}
 	return &forum, nil
 }
-
-func CreateForum(forum *models.Forum) (*models.Forum, error) {
-	_, err := db.CreateForumStmt.Exec(forum.Title, forum.User, forum.Slug)
-	if err != nil {
-		f, err := GetForum(forum.Slug)
-		if err != nil {
-			if err == ErrNotFound {
-				return nil, errors.New("can't insert into db")
-			}
-			return nil, errors.Wrap(err, "can't get from forum")
-		}
-		return f, ErrDuplicate
-	}
-	return forum, nil
-}
-
